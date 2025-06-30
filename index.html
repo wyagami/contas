@@ -195,6 +195,39 @@
             </form>
         </div>
     </div>
+
+    <!-- Copy Transaction Modal -->
+    <div id="copy-transaction-modal" class="modal-overlay hidden">
+        <div class="modal-content shadow-xl text-left">
+            <h3 class="text-lg font-bold mb-4">Copiar Transação</h3>
+            <form id="copy-transaction-form" class="grid grid-cols-1 gap-4">
+                <input type="hidden" id="copy-original-id"> <!-- Para armazenar o ID da transação original -->
+                <div>
+                    <label for="copy-date" class="block text-sm font-medium text-gray-700 mb-1">Nova Data</label>
+                    <input type="date" id="copy-date" name="date" required class="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                </div>
+                <div>
+                    <label for="copy-description" class="block text-sm font-medium text-gray-700 mb-1">Descrição</label>
+                    <input type="text" id="copy-description" name="description" required class="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" readonly>
+                </div>
+                <div>
+                    <label for="copy-amount" class="block text-sm font-medium text-gray-700 mb-1">Valor (R$)</label>
+                    <input type="number" id="copy-amount" name="amount" step="0.01" required class="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" readonly>
+                </div>
+                <div>
+                    <label for="copy-type" class="block text-sm font-medium text-gray-700 mb-1">Tipo</label>
+                    <select id="copy-type" name="type" required class="w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white" disabled>
+                        <option value="income">Receita</option>
+                        <option value="expense">Despesa</option>
+                    </select>
+                </div>
+                <div class="flex justify-end gap-4 mt-4">
+                    <button type="button" id="cancel-copy" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300">Cancelar</button>
+                    <button type="submit" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">Copiar</button>
+                </div>
+            </form>
+        </div>
+    </div>
     
     <script>
         const DB_NAME = 'FinanceDB';
@@ -250,6 +283,16 @@
         const editAmountInput = document.getElementById('edit-amount');
         const editTypeSelect = document.getElementById('edit-type');
         const cancelEditBtn = document.getElementById('cancel-edit');
+
+        // Elementos do modal de cópia
+        const copyTransactionModal = document.getElementById('copy-transaction-modal');
+        const copyTransactionForm = document.getElementById('copy-transaction-form');
+        const copyOriginalIdInput = document.getElementById('copy-original-id');
+        const copyDateInput = document.getElementById('copy-date');
+        const copyDescriptionInput = document.getElementById('copy-description');
+        const copyAmountInput = document.getElementById('copy-amount');
+        const copyTypeSelect = document.getElementById('copy-type');
+        const cancelCopyBtn = document.getElementById('cancel-copy');
 
 
         let transactionToDeleteId = null;
@@ -425,6 +468,9 @@
                         <button data-id="${transaction.id}" class="edit-btn text-gray-400 hover:text-blue-600 transition duration-150 mr-2">
                             <i class="fas fa-edit"></i>
                         </button>
+                        <button data-id="${transaction.id}" class="copy-btn text-gray-400 hover:text-purple-600 transition duration-150 mr-2">
+                            <i class="fas fa-copy"></i>
+                        </button>
                         <button data-id="${transaction.id}" class="delete-btn text-gray-400 hover:text-red-600 transition duration-150">
                             <i class="fas fa-trash-alt"></i>
                         </button>
@@ -445,6 +491,7 @@
             addDeleteListeners();
             addEditListeners(); // Adiciona os listeners de edição
             addMarkDoneListeners(); // Adiciona os listeners de marcar como feito
+            addCopyListeners(); // Adiciona os listeners de copiar
             addDragAndDropListeners(); // Adiciona os listeners de arrastar e soltar
         }
         
@@ -483,6 +530,31 @@
                 button.addEventListener('click', async (e) => {
                     const transactionId = Number(e.currentTarget.dataset.id);
                     await toggleDoneStatus(transactionId);
+                });
+            });
+        }
+
+        function addCopyListeners() {
+            document.querySelectorAll('.copy-btn').forEach(button => {
+                button.addEventListener('click', async (e) => {
+                    const originalTransactionId = Number(e.currentTarget.dataset.id);
+                    const allTransactions = await getAllTransactions();
+                    const originalTransaction = allTransactions.find(t => t.id === originalTransactionId);
+
+                    if (originalTransaction) {
+                        // Preenche o modal de cópia com os dados da transação original
+                        copyOriginalIdInput.value = originalTransaction.id; // Armazena o ID original (opcional, mas útil para referência)
+                        copyDescriptionInput.value = originalTransaction.description;
+                        copyAmountInput.value = originalTransaction.amount;
+                        copyTypeSelect.value = originalTransaction.type;
+                        
+                        // Define a nova data como a data atual por padrão
+                        copyDateInput.valueAsDate = new Date();
+
+                        copyTransactionModal.classList.remove('hidden');
+                    } else {
+                        showCustomModal("Erro: Transação original não encontrada para cópia.");
+                    }
                 });
             });
         }
@@ -639,6 +711,27 @@
             editTransactionModal.classList.add('hidden');
             await renderUI();
             showCustomModal("Transação atualizada com sucesso!");
+        });
+
+        // Event listeners do modal de cópia
+        cancelCopyBtn.addEventListener('click', () => {
+            copyTransactionModal.classList.add('hidden');
+        });
+
+        copyTransactionForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const newTransaction = {
+                date: copyDateInput.value,
+                description: copyDescriptionInput.value,
+                amount: parseFloat(copyAmountInput.value),
+                type: copyTypeSelect.value,
+                createdAt: new Date().toISOString() // Nova data de criação para a cópia
+            };
+
+            await addTransaction(newTransaction); // Adiciona a nova transação
+            copyTransactionModal.classList.add('hidden');
+            await renderUI();
+            showCustomModal("Transação copiada com sucesso!");
         });
 
 
