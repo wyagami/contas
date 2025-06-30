@@ -64,6 +64,10 @@
             opacity: 0.5;
             border: 2px dashed #000;
         }
+        /* Estilo para transações marcadas como realizadas */
+        .transaction-done {
+            background-color: #dbeafe !important; /* blue-100, usando !important para garantir a sobreposição */
+        }
     </style>
 </head>
 <body class="antialiased text-gray-800">
@@ -264,8 +268,8 @@
             return new Promise((resolve, reject) => {
                 const tx = db.transaction(STORE_NAME, 'readwrite');
                 const store = tx.objectStore(STORE_NAME);
-                // Atribui uma propriedade 'order' inicial para novas transações
-                const transactionToAdd = { ...transaction, order: Date.now() }; 
+                // Atribui uma propriedade 'order' inicial para novas transações e 'isDone' como false
+                const transactionToAdd = { ...transaction, order: Date.now(), isDone: false }; 
                 const request = store.add(transactionToAdd);
                 request.onsuccess = resolve;
                 request.onerror = (event) => reject(event.target.error);
@@ -334,6 +338,21 @@
             }
         }
 
+        // Função para alternar o status 'isDone' de uma transação
+        async function toggleDoneStatus(id) {
+            let allTransactions = await getAllTransactions();
+            const transactionToToggle = allTransactions.find(t => t.id === id);
+
+            if (transactionToToggle) {
+                transactionToToggle.isDone = !transactionToToggle.isDone; // Alterna o status
+                await updateTransaction(transactionToToggle);
+                await renderUI();
+            } else {
+                showCustomModal("Erro: Transação não encontrada para alternar status.");
+            }
+        }
+
+
         // Renderização
         async function renderUI() {
             let allTransactions = await getAllTransactions(); // Obtenha todas as transações
@@ -380,7 +399,14 @@
             filteredAndSortedTransactions.forEach(transaction => {
                 const amount = transaction.type === 'income' ? transaction.amount : -transaction.amount;
                 const tr = document.createElement('tr');
-                tr.classList.add(transaction.type === 'income' ? 'bg-green-50' : 'bg-red-50');
+                
+                // Adiciona classes para tipo de transação. Se estiver 'done', remove as outras cores de fundo.
+                if (transaction.isDone) {
+                    tr.classList.add('transaction-done');
+                } else {
+                    tr.classList.add(transaction.type === 'income' ? 'bg-green-50' : 'bg-red-50');
+                }
+
                 const valueClass = transaction.type === 'income' ? 'transaction-income' : 'transaction-expense';
                 
                 // Adiciona atributos draggable e data-id
@@ -393,6 +419,9 @@
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-right font-semibold ${valueClass}">${formatCurrency(amount)}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-right font-semibold ${transaction.cumulativeBalance >= 0 ? 'balance-positive' : 'balance-negative'}">${formatCurrency(transaction.cumulativeBalance)}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-center">
+                        <button data-id="${transaction.id}" class="mark-done-btn text-gray-400 hover:${transaction.isDone ? 'text-gray-600' : 'text-blue-500'} transition duration-150 mr-2">
+                            <i class="fas fa-check-circle"></i>
+                        </button>
                         <button data-id="${transaction.id}" class="edit-btn text-gray-400 hover:text-blue-600 transition duration-150 mr-2">
                             <i class="fas fa-edit"></i>
                         </button>
@@ -415,6 +444,7 @@
             
             addDeleteListeners();
             addEditListeners(); // Adiciona os listeners de edição
+            addMarkDoneListeners(); // Adiciona os listeners de marcar como feito
             addDragAndDropListeners(); // Adiciona os listeners de arrastar e soltar
         }
         
@@ -444,6 +474,15 @@
                     } else {
                         showCustomModal("Erro: Transação não encontrada para edição.");
                     }
+                });
+            });
+        }
+
+        function addMarkDoneListeners() {
+            document.querySelectorAll('.mark-done-btn').forEach(button => {
+                button.addEventListener('click', async (e) => {
+                    const transactionId = Number(e.currentTarget.dataset.id);
+                    await toggleDoneStatus(transactionId);
                 });
             });
         }
@@ -592,8 +631,8 @@
                 description: editDescriptionInput.value,
                 amount: parseFloat(editAmountInput.value),
                 type: editTypeSelect.value,
-                // Mantém o createdAt original
-                // A propriedade 'order' será atualizada pela função updateTransactionOrder se houver drag and drop
+                // Mantém o createdAt original e o isDone
+                isDone: (await getAllTransactions()).find(t => t.id === Number(editIdInput.value)).isDone
             };
 
             await updateTransaction(updatedTransaction);
@@ -637,9 +676,13 @@
                         
                         for (const transaction of transactions) {
                             // Remove o id para que o IndexedDB possa gerar um novo
-                            // e garante que 'order' seja definido se não estiver presente
+                            // e garante que 'order' e 'isDone' sejam definidos se não estiverem presentes
                             delete transaction.id; 
-                            const transactionToImport = { ...transaction, order: transaction.order || Date.now() };
+                            const transactionToImport = { 
+                                ...transaction, 
+                                order: transaction.order || Date.now(),
+                                isDone: typeof transaction.isDone === 'boolean' ? transaction.isDone : false
+                            };
                             await addTransaction(transactionToImport);
                         }
                         await renderUI();
