@@ -59,6 +59,11 @@
             width: 400px;
             text-align: center;
         }
+        /* Estilo para o item arrastável */
+        .dragging {
+            opacity: 0.5;
+            border: 2px dashed #000;
+        }
     </style>
 </head>
 <body class="antialiased text-gray-800">
@@ -169,6 +174,7 @@
                     if (!db.objectStoreNames.contains(STORE_NAME)) {
                         const store = db.createObjectStore(STORE_NAME, { keyPath: 'id', autoIncrement: true });
                         store.createIndex('date', 'date', { unique: false });
+                        // Não precisamos de um índice 'order' se vamos ordenar em memória
                     }
                 };
 
@@ -199,6 +205,7 @@
         const filterDateInput = document.getElementById('filter-date'); // Novo elemento de filtro
 
         let transactionToDeleteId = null;
+        let draggedItem = null; // Variável para armazenar o item sendo arrastado (para feedback visual)
 
         // Funções de formatação
         const formatCurrency = (value) => value.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
@@ -213,7 +220,9 @@
             return new Promise((resolve, reject) => {
                 const tx = db.transaction(STORE_NAME, 'readwrite');
                 const store = tx.objectStore(STORE_NAME);
-                const request = store.add(transaction);
+                // Atribui uma propriedade 'order' inicial para novas transações
+                const transactionToAdd = { ...transaction, order: Date.now() }; 
+                const request = store.add(transactionToAdd);
                 request.onsuccess = resolve;
                 request.onerror = (event) => reject(event.target.error);
             });
@@ -239,13 +248,64 @@
             });
         }
 
+        // Função para atualizar uma transação no IndexedDB
+        function updateTransaction(transaction) {
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_NAME, 'readwrite');
+                const store = tx.objectStore(STORE_NAME);
+                const request = store.put(transaction); // put() para atualizar ou adicionar
+                request.onsuccess = resolve;
+                request.onerror = (event) => reject(event.target.error);
+            });
+        }
+
+        // Função para atualizar a ordem das transações no banco de dados
+        async function updateTransactionOrder(reorderedTransactions) {
+            const tx = db.transaction(STORE_NAME, 'readwrite');
+            const store = tx.objectStore(STORE_NAME);
+
+            try {
+                // Atualiza a propriedade 'order' para cada transação no banco de dados
+                for (let i = 0; i < reorderedTransactions.length; i++) {
+                    // Atribui uma nova ordem sequencial (índice no array)
+                    const transaction = { ...reorderedTransactions[i], order: i }; 
+                    await new Promise((resolve, reject) => {
+                        const putRequest = store.put(transaction); // Usa put para atualizar registros existentes
+                        putRequest.onsuccess = () => resolve();
+                        putRequest.onerror = (event) => reject(event.target.error);
+                    });
+                }
+
+                // Aguarda a conclusão da transação
+                await new Promise((resolve, reject) => {
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = (event) => reject(event.target.error);
+                });
+
+                await renderUI(); // Renderiza a UI novamente após a atualização completa
+            } catch (error) {
+                console.error('Erro ao atualizar a ordem das transações:', error);
+                tx.abort(); // Aborta a transação em caso de erro
+                throw error;
+            }
+        }
+
         // Renderização
         async function renderUI() {
             let allTransactions = await getAllTransactions(); // Obtenha todas as transações
-            const filterDateValue = filterDateInput.value;
 
-            // Ordena TODAS as transações por data em ordem crescente para calcular o saldo acumulado corretamente
-            const sortedAllTransactions = allTransactions.sort((a, b) => new Date(a.date) - new Date(b.date));
+            // Ordena TODAS as transações por data, e em seguida pela propriedade 'order'
+            const sortedAllTransactions = allTransactions.sort((a, b) => {
+                const dateA = new Date(a.date);
+                const dateB = new Date(b.date);
+                if (dateA - dateB !== 0) {
+                    return dateA - dateB;
+                }
+                // Se as datas forem iguais, ordena pela propriedade 'order'
+                // Assume 0 se 'order' for indefinido (para transações antigas sem a propriedade)
+                return (a.order || 0) - (b.order || 0);
+            });
+
             let cumulativeBalanceForAll = 0;
             const transactionsWithCumulative = sortedAllTransactions.map(transaction => {
                 const amount = transaction.type === 'income' ? transaction.amount : -transaction.amount;
@@ -253,6 +313,7 @@
                 return { ...transaction, cumulativeBalance: cumulativeBalanceForAll }; // Adiciona o saldo acumulado
             });
 
+            const filterDateValue = filterDateInput.value;
             // Aplica o filtro de data nas transações já com o saldo acumulado
             let filteredAndSortedTransactions = transactionsWithCumulative;
             if (filterDateValue) {
@@ -278,6 +339,10 @@
                 tr.classList.add(transaction.type === 'income' ? 'bg-green-50' : 'bg-red-50');
                 const valueClass = transaction.type === 'income' ? 'transaction-income' : 'transaction-expense';
                 
+                // Adiciona atributos draggable e data-id
+                tr.setAttribute('draggable', 'true');
+                tr.setAttribute('data-id', transaction.id);
+
                 tr.innerHTML = `
                     <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">${formatDate(transaction.date)}</td>
                     <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">${transaction.description}</td>
@@ -302,6 +367,7 @@
             balanceEl.classList.add(finalTotalBalance >= 0 ? 'balance-positive' : 'balance-negative');
             
             addDeleteListeners();
+            addDragAndDropListeners(); // Adiciona os listeners de arrastar e soltar
         }
         
         function addDeleteListeners() {
@@ -312,6 +378,107 @@
                 });
             });
         }
+
+        // Funções de arrastar e soltar
+        function addDragAndDropListeners() {
+            const rows = transactionList.querySelectorAll('tr[draggable="true"]');
+            rows.forEach(row => {
+                row.addEventListener('dragstart', handleDragStart);
+                row.addEventListener('dragover', handleDragOver);
+                row.addEventListener('dragleave', handleDragLeave);
+                row.addEventListener('drop', handleDrop);
+                row.addEventListener('dragend', handleDragEnd);
+            });
+        }
+
+        function handleDragStart(e) {
+            // Armazena o ID da transação no dataTransfer
+            e.dataTransfer.setData('text/plain', this.dataset.id); 
+            e.dataTransfer.effectAllowed = 'move';
+            this.classList.add('dragging');
+            draggedItem = this; // Armazena a referência para o elemento DOM para feedback visual
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault(); // Permite o drop
+            e.dataTransfer.dropEffect = 'move';
+            if (this !== draggedItem) {
+                this.classList.add('bg-gray-100'); // Feedback visual para onde o item será solto
+            }
+        }
+
+        function handleDragLeave(e) {
+            this.classList.remove('bg-gray-100');
+        }
+
+        async function handleDrop(e) {
+            e.preventDefault();
+            this.classList.remove('bg-gray-100');
+
+            // Obtém o ID da transação arrastada do dataTransfer
+            const draggedId = Number(e.dataTransfer.getData('text/plain'));
+            const targetId = Number(this.dataset.id);
+
+            // Verifica se o ID arrastado é válido e se não estamos soltando no mesmo item
+            if (draggedId && draggedId !== targetId) {
+                let allTransactions = await getAllTransactions(); // Obtenha todas as transações
+
+                const draggedTransaction = allTransactions.find(t => t.id === draggedId);
+                const targetTransaction = allTransactions.find(t => t.id === targetId);
+
+                if (!draggedTransaction) {
+                    console.error("Transação arrastada não encontrada.");
+                    return;
+                }
+
+                // Se houver uma transação alvo, atualiza a data da transação arrastada
+                if (targetTransaction) {
+                    draggedTransaction.date = targetTransaction.date;
+                }
+                // Se não houver alvo (ex: lista vazia), a data permanece a original
+
+                // Remove a transação arrastada da sua posição original
+                let tempTransactions = allTransactions.filter(t => t.id !== draggedId);
+
+                // Encontra o índice da transação alvo no array filtrado
+                const targetIndex = tempTransactions.findIndex(t => t.id === targetId);
+
+                let newOrder = [];
+                if (targetIndex === -1) { 
+                    // Se o alvo não foi encontrado (ex: lista vazia ou erro), adiciona no final
+                    newOrder = [...tempTransactions, draggedTransaction];
+                } else if (e.clientY < this.getBoundingClientRect().top + this.offsetHeight / 2) {
+                    // Se a posição do mouse estiver na metade superior do alvo, insere antes
+                    newOrder = [
+                        ...tempTransactions.slice(0, targetIndex),
+                        draggedTransaction,
+                        ...tempTransactions.slice(targetIndex)
+                    ];
+                } else {
+                    // Se a posição do mouse estiver na metade inferior do alvo, insere depois
+                    newOrder = [
+                        ...tempTransactions.slice(0, targetIndex + 1),
+                        draggedTransaction,
+                        ...tempTransactions.slice(targetIndex + 1)
+                    ];
+                }
+
+                // Atualiza a ordem no IndexedDB
+                await updateTransactionOrder(newOrder);
+            }
+        }
+
+        function handleDragEnd(e) {
+            if (draggedItem) { // Garante que draggedItem não é null antes de tentar remover a classe
+                draggedItem.classList.remove('dragging');
+            }
+            // Remove qualquer destaque de fundo que possa ter ficado
+            document.querySelectorAll('#transaction-list tr').forEach(row => {
+                row.classList.remove('bg-gray-100');
+            });
+            draggedItem = null;
+        }
+
 
         // Event Listeners
         form.addEventListener('submit', async (e) => {
@@ -377,8 +544,10 @@
                         
                         for (const transaction of transactions) {
                             // Remove o id para que o IndexedDB possa gerar um novo
+                            // e garante que 'order' seja definido se não estiver presente
                             delete transaction.id; 
-                            await addTransaction(transaction);
+                            const transactionToImport = { ...transaction, order: transaction.order || Date.now() };
+                            await addTransaction(transactionToImport);
                         }
                         await renderUI();
                         // Substitui alert() por um modal personalizado
