@@ -548,8 +548,25 @@
                         copyAmountInput.value = originalTransaction.amount;
                         copyTypeSelect.value = originalTransaction.type;
                         
-                        // Define a nova data como a data atual por padrão
-                        copyDateInput.valueAsDate = new Date();
+                        // Define a nova data como o mesmo dia do mês seguinte, corrigindo o problema de "dia a menos"
+                        // Adiciona 'T12:00:00' para garantir que a data seja interpretada no fuso horário local no meio do dia
+                        const originalDate = new Date(originalTransaction.date + 'T12:00:00'); 
+                        const originalDay = originalDate.getDate();
+                        
+                        // Cria uma nova data para o 1º dia do próximo mês
+                        const nextMonthDate = new Date(originalDate.getFullYear(), originalDate.getMonth() + 1, 1);
+                        
+                        // Tenta definir o dia original. Se o mês mudar, significa que o dia original não existe no próximo mês,
+                        // então define para o último dia do mês anterior (que é o último dia do mês desejado).
+                        nextMonthDate.setDate(originalDay);
+                        if (nextMonthDate.getMonth() !== (originalDate.getMonth() + 1) % 12) {
+                            nextMonthDate.setDate(0); // Define para o último dia do mês anterior (último dia do mês desejado)
+                        }
+                        
+                        // Garante que a hora está no meio do dia para evitar problemas de fuso horário
+                        nextMonthDate.setHours(12, 0, 0, 0);
+
+                        copyDateInput.valueAsDate = nextMonthDate;
 
                         copyTransactionModal.classList.remove('hidden');
                     } else {
